@@ -12,6 +12,7 @@ var member = {};
 var room = new Array(ROOM_COUNT);
 for( i=0; i<ROOM_COUNT; i++ ) {
 	room[i] = new roomManager(i);
+	initRoom(room[i]);
 }
 
 
@@ -43,6 +44,16 @@ io.sockets.on('connection', function(socket) {
 		socket.emit('lobby_info', member);
 	});
 
+	// 部屋情報の要求
+	socket.on('room_info_require', function(data, fn) {
+		console.log('room_info_require request');
+
+		for( i=0; i<ROOM_COUNT; i++ ) {
+			socket.emit('room_info', {number: i, member: room[i].member});
+		}
+		fn(true);
+	});
+
 	// チャットメッセージ受信
 	socket.on('sendMessage', function(data, fn) {
 		console.log('sendMessage request: ' + data.id );
@@ -60,32 +71,42 @@ io.sockets.on('connection', function(socket) {
 
 // 部屋管理
 function roomManager(index) {
-	var viewer = {}; // この部屋にいる人
-	var member = {}; // 対戦者
-	var number = index;
+	this.viewer = {}; // この部屋にいる人
+	this.member = {}; // 対戦者
+	this.number = index;
+	this.roomsocket = io.of('/room/'+ index);
+}
 
-	var roomsocket = io.of('/room/'+ index).on('connection', function(socket){
-		console.log('room['+number+'] connection!');
+function initRoom(room) {
+	room.roomsocket.on('connection', function(socket){
+		console.log('room['+room.number+'] connection!');
 
 		// 部屋に接続
 		socket.on('room_enter', function(data, fn) {
-			console.log('room_enter request: room[' + number + '], ' + data.name );
+			console.log('room_enter request: room[' + room.number + '], ' + data.name );
 
 			// 観戦か対戦か
 			if( data.purpose == ROOM_MEMBER ) {
 				// 対戦
-				var n = Object.keys(member).length;
+				var n = Object.keys(room.member).length;
 				if( n == 0 || n == 1) {
-					member[socket.id] = data.name;
+					room.member[socket.id] = data.name;
 					fn( true );
+
+					// 部屋にいる人をブロードキャスト
+					io.sockets.emit('room_info', {number: room.number, member: room.member});
 
 					// 対戦開始
 					if( n == 1 ) {
 						console.log('Game Start!!!');
-						for( var id in member ) {
-							console.log(member[id]);
-							if(id in roomsocket.sockets) {
-								roomsocket.sockets[id].emit('gameStart', member);
+						// 乱数用意
+						var seed = Math.floor(Math.random()*10000000);
+						for( var id in room.member ) {
+							console.log(room.member[id]);
+							if(id in room.roomsocket.sockets) {
+								room.roomsocket.sockets[id].emit(
+									'gameStart',
+									{seed: seed, member: room.member} );
 							}
 						}
 					}
@@ -94,29 +115,23 @@ function roomManager(index) {
 				}
 			} else if( data.purpose == ROOM_VIEWER ) {
 				// 観戦
-				viewer[socket.id] = data.name;
+				room.viewer[socket.id] = data.name;
 				fn( true );
 			} else {
 				fn( false );
 			}
 		});
 
-/*
-		// ゲームを始めた旨の通知をbroadcast
-		socket.on('game start', function(){
-			console.log('started');
-			socket.broadcast.emit('game start',{});
-		});
-		// ジャンプした通知をbroadcast
-		socket.on('jump', function(data){
-			console.log('jumped');
-			socket.broadcast.emit('jump',{frame: data.frame, score: data.score, voltage: data.voltage});
-		});
-		// ゲームの状況をbroadcast
-		socket.on('game info', function(data){
-			socket.broadcast.emit('game info',{frame: data.frame, score: data.score, voltage: data.voltage});
-		});
-*/
-	});
-}
+		// カレントぷよの情報を受けとった
+		socket.on('game_current_info_send', function(data) {
+			// 敵にじょうほうを送る
+			var opid = data.opponent.id;
 
+			if( opid in room.roomsocket.sockets ) {
+				room.roomsocket.sockets[opid].emit(
+					'game_current_info_receive',
+					data);
+			}
+		});
+	});
+};
